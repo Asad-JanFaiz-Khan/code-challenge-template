@@ -1,7 +1,41 @@
 *.py[cod]
+*$py.class
+*.so
+__pycache__/
+
+# Virtual environments
 venv/
+env/
+.venv/
+ENV/
+
+# IDEs & Editors
 .~*
 .idea/
 .vim/
 .vscode/
 .mypy_cache/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Environment files
+.env
+.env.local
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+

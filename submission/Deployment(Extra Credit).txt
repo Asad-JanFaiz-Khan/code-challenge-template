@@ -1,0 +1,120 @@
+Deployment (Extra Credit)
+
+Overview
+
+This document describes a practical approach to deploying the Weather API, its database, and a scheduled ingestion job to Microsoft Azure. The plan favors maintainability, security, and cost-effective scaling.
+
+High-level architecture
+
+- Source control & CI/CD: GitHub (repo) + GitHub Actions for build/test/publish.
+- Container registry: Azure Container Registry (ACR) to hold Docker images.
+- API hosting: Azure App Service (Linux) or Azure Container Apps / Azure Kubernetes Service (AKS) for more control. Prefer Azure Container Apps for container-based, autoscaling workloads with less infra management.
+- Database: Azure Database for PostgreSQL (Flexible Server) — managed, supports SQLAlchemy, and is production-ready. Alternatively, Azure SQL Database if preferring T-SQL.
+- Scheduled ingestion: Azure Functions (Python) with a Timer Trigger or an Azure Container Apps Job scheduled via cron. Use Azure Functions for simple serverless scheduled tasks.
+- Raw data storage: Azure Blob Storage for the uploaded `wx_data` and `yld_data` files. The ingestion function reads from Blob Storage.
+- Secrets & config: Azure Key Vault for DB credentials, storage connection strings, and other sensitive configuration. Use Managed Identity for secure access where possible.
+- Observability: Azure Monitor + Application Insights for API telemetry, logs, and alerts.
+- Infrastructure as Code: Terraform (recommended) or Bicep / ARM templates for repeatable deployments.
+
+Why these choices
+
+- Containerization (ACR + Container Apps / App Service) makes the API portable and easy to deploy via CI/CD.
+- PostgreSQL (managed) is compatible with SQLAlchemy code and provides durability, backups, and scaling.
+- Azure Functions Timer Trigger is simple to schedule Python jobs and integrates with Blob Storage and Key Vault.
+- Key Vault + Managed Identity removes secrets from code and CI logs.
+- Terraform/Bicep ensures reproducible infra and easier environment provisioning (dev/stage/prod).
+
+Deployment steps (concise)
+
+1. Prepare code for cloud
+   - Add Dockerfile for the Flask API and a separate Dockerfile (or function code) for the ingestion job.
+   - Make DB URL and storage connection strings configurable from environment variables.
+   - Modify ingestion to read from Azure Blob Storage (or accept a container path) instead of local disk.
+
+2. CI/CD: GitHub Actions
+   - On push to `main`, run tests (`pytest`).
+   - Build Docker images for API and ingestion job.
+   - Push images to Azure Container Registry.
+   - Trigger deployment to Container Apps or App Service (using `azure/login` + `azure/cli` actions or the `azure/container-apps-deploy` action).
+
+3. Provision Azure resources (Terraform or Bicep)
+   - Resource group, ACR, Container Apps environment (or App Service plan), Container Apps (API), Container Apps Job or Function App (ingestion), PostgreSQL Flexible Server, Storage Account (Blob), Key Vault, Log Analytics Workspace.
+   - Create service principal or use GitHub OIDC + Managed Identity for CI to push images and deploy.
+
+4. Database setup
+   - Provision Azure Database for PostgreSQL Flexible Server.
+   - Run database migrations (create schema) as part of a deployment job (could be executed via a short-lived container running `alembic upgrade head` or a SQL script run with `psql`).
+   - Configure connection pooling (pgbouncer) if the API will make many short-lived DB connections.
+
+5. Secrets and networking
+   - Store DB credentials, ACR creds (if not using managed identities), and storage keys in Key Vault.
+   - Give the API and ingestion service a Managed Identity and grant it Key Vault Secret Get and Storage Blob Data Reader roles.
+   - Consider enabling Private Link / VNet integration for the DB and Container Apps if you need internal-only access.
+
+6. Schedule ingestion
+   Option A (Azure Functions):
+   - Deploy ingestion logic as an Azure Function with a Timer Trigger cron expression (e.g., daily).
+   - The function reads file locations from Blob Storage and writes processed rows to PostgreSQL.
+   - Grant the Function's identity access to Key Vault and Blob Storage.
+
+   Option B (Container Apps Job):
+   - Create a container image for the ingestion script and use Container Apps Job with a cron schedule.
+   - Job pulls data from Blob Storage, runs ingestion, and exits. Container Apps jobs can be scheduled and will scale to run when needed.
+
+7. Observability and alerts
+   - Enable Application Insights for the API (automatic instrumentation for Flask or manual with the SDK).
+   - Configure alerts for failures in the ingestion job (Function/Job), high DB connection counts, or elevated error rates.
+
+8. Rollout and testing
+   - Deploy to a staging environment first. Run end-to-end tests: API endpoints, ingestion pipeline, and verify data in Postgres.
+   - Use feature flags or traffic routing if performing gradual rollouts.
+
+9. Cost & scaling considerations
+   - Choose a flexible DB tier to match expected workloads. Use autoscaling for Container Apps.
+   - For large ingestion volumes, consider batching and parallelization, and scale DB accordingly.
+
+Sample Azure CLI snippets (illustrative)
+
+# Log in
+az login
+az account set --subscription <SUBSCRIPTION_ID>
+
+# Create resource group
+az group create --name weather-rg --location eastus
+
+# Create ACR
+az acr create --resource-group weather-rg --name weatheracr --sku Basic
+
+# Build and push image to ACR (locally or via CI)
+az acr login --name weatheracr
+docker build -t weather-api:latest -f Dockerfile .
+docker tag weather-api:latest weatheracr.azurecr.io/weather-api:latest
+docker push weatheracr.azurecr.io/weather-api:latest
+
+# Example: create Azure Container App (requires Container Apps environment+log analytics)
+# See Azure docs for full sequence (create env, attach ACR, then create container app)
+
+Security & Best Practices
+
+- Use Managed Identities and Key Vault; avoid storing secrets in repo or CI logs.
+- Restrict egress/ingress using network rules and Private Link for the DB when needed.
+- Add health checks and readiness probes for the API container.
+- Use application-level retries and idempotent ingestion (upserts) to handle duplicate runs.
+- Enable automated backups for the managed DB and test restore procedures.
+
+Notes specific to this codebase
+
+- Replace SQLite with PostgreSQL in the connection URL (`DATABASE_URL`) and validate SQLAlchemy models/migrations against Postgres.
+- Ensure ingestion reads from Azure Blob Storage rather than local `data/` files. For an initial lift-and-shift, the ingestion job could be packaged with the files and run once, but production should read from Blob Storage.
+- The API's `create_app` factory makes it straightforward to bind environment-specific configs at startup.
+
+Next steps (if you want me to implement):
+   - Add Dockerfiles for the API and ingestion scripts.
+   - Add a sample GitHub Actions workflow for CI/CD that builds, tests, and pushes images to ACR.
+   - Add Terraform templates that provision the minimal resources (ACR, Container Apps, PostgreSQL, Storage, Key Vault).
+
+Author's note
+
+I have worked hands-on primarily with Microsoft Azure, deploying and operating services such as Container Apps, Azure Functions, Azure Database for PostgreSQL, Blob Storage, and Key Vault. I also have working knowledge of AWS and Google Cloud Platform and can adapt the architecture and deployment artifacts to those providers if desired. If you’d like, I can produce Azure-targeted Dockerfiles, GitHub Actions workflows, and Terraform templates (or equivalent AWS/GCP artifacts) to make the deployment reproducible.
+
+End of document.
